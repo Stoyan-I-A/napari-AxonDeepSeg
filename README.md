@@ -14,7 +14,7 @@ git clone https://github.com/neuropoly/axondeepseg.git
 ```
 5. Get to the napari-ADS folder:
 ```
-cd napari-AxonDeepSeg
+cd napari-plugin
 cd napari-ADS
 ```
 6. While the conda environment in which you installed AxonDeepSeg is active, use this command to install the plugin:
