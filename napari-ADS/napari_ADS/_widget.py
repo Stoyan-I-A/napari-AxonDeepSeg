@@ -6,7 +6,7 @@ from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDi
 from qtpy.QtCore import QStringListModel
 
 import AxonDeepSeg
-from AxonDeepSeg import ads_utils, segment
+from AxonDeepSeg import ads_utils, segment, postprocessing
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
 if TYPE_CHECKING:
@@ -26,6 +26,8 @@ class ADSplugin(QWidget):
         apply_model_button.clicked.connect(self._on_apply_model_button_click)
 
         fill_axons_button = QPushButton("Fill axons")
+        fill_axons_button.clicked.connect(self._on_fill_axons_click)
+
         compute_morphometrics_button = QPushButton("Compute morphometrics")
 
         self.setLayout(QVBoxLayout())
@@ -99,3 +101,34 @@ class ADSplugin(QWidget):
         self.viewer.add_labels(axon_data, color={1: 'blue'})
         myelin_data = ads_utils.imread(myelin_mask_path).astype(bool)
         self.viewer.add_labels(myelin_data, color={1: 'red'})
+
+
+    def _on_fill_axons_click(self):
+        axon_layer = self.get_axon_layer()
+        myelin_layer = self.get_myelin_layer()
+
+        if (axon_layer is None) or (myelin_layer is None):
+            return
+
+        myelin_array = np.array(myelin_layer.data, copy=True)
+        axon_extracted_array = postprocessing.fill_myelin_holes(myelin_array)
+        axon_array_indexes = np.where(axon_extracted_array > 0)
+        axon_layer._save_history((axon_array_indexes,
+                                  np.array(axon_layer.data[axon_array_indexes], copy=True),
+                                  1))
+        axon_layer.data[axon_array_indexes] = 1
+        axon_layer.refresh()
+
+    def get_axon_layer(self):
+        #TODO: find a better way to find the layer
+        for layer in self.viewer.layers:
+            if layer.name == "axon_data":
+                return layer
+        return None
+
+    def get_myelin_layer(self):
+        #TODO: find a better way to find the layer
+        for layer in self.viewer.layers:
+            if layer.name == "myelin_data":
+                return layer
+        return None
