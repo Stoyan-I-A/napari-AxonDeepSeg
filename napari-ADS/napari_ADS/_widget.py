@@ -2,8 +2,9 @@ from typing import TYPE_CHECKING
 
 from pathlib import Path
 import numpy as np
-from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog
+from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit
 from qtpy.QtCore import QStringListModel
+from qtpy.QtGui import QPixmap
 
 import AxonDeepSeg
 from AxonDeepSeg import ads_utils, segment, postprocessing
@@ -18,6 +19,16 @@ class ADSplugin(QWidget):
         super().__init__()
         self.viewer = napari_viewer
 
+        citation_textbox = QPlainTextEdit(self)
+        citation_textbox.setPlainText(self.get_citation_string())
+        citation_textbox.setReadOnly(True)
+        citation_textbox.setMaximumHeight(100)
+
+        hyperlink_label = QLabel()
+        hyperlink_label.setOpenExternalLinks(True)
+        hyperlink_label.setText(
+            '<a href="https://axondeepseg.readthedocs.io/en/latest/">Need help? Read the documentation</a>')
+
         self.available_models = ads_utils.get_existing_models_list()
         self.model_selection_combobox = QComboBox()
         self.model_selection_combobox.addItems(["Select the model"] + self.available_models)
@@ -31,10 +42,16 @@ class ADSplugin(QWidget):
         compute_morphometrics_button = QPushButton("Compute morphometrics")
 
         self.setLayout(QVBoxLayout())
+        self.layout().setSpacing(10)
+        self.layout().setContentsMargins(10, 20, 20, 10)
+        self.layout().addWidget(self.get_logo())
+        self.layout().addWidget(citation_textbox)
+        self.layout().addWidget(hyperlink_label)
         self.layout().addWidget(self.model_selection_combobox)
         self.layout().addWidget(apply_model_button)
         self.layout().addWidget(fill_axons_button)
         self.layout().addWidget(compute_morphometrics_button)
+        self.layout().addStretch()
 
 
     def add_layer_pixel_size_to_metadata(self, layer):
@@ -72,9 +89,6 @@ class ADSplugin(QWidget):
         if "pixel_size" not in selected_layer.metadata.keys():
             if not self.add_layer_pixel_size_to_metadata(selected_layer):
                 return # Couldn't find pixel size
-
-        print(image_directory)
-        print(model_path)
 
         try:
             segment.segment_image(
@@ -132,3 +146,27 @@ class ADSplugin(QWidget):
             if layer.name == "myelin_data":
                 return layer
         return None
+
+    def get_logo(self):
+        ads_path = Path(AxonDeepSeg.__file__).parents[0]
+        logo_file = ads_path / "logo_ads-alpha_small.png"
+        logo_label = QLabel(self)
+        logo_pixmap = QPixmap(str(logo_file))
+        logo_label.setPixmap(logo_pixmap)
+        logo_label.resize(logo_pixmap.width(), logo_pixmap.height())
+        return logo_label
+
+    def get_citation_string(self):
+        """
+        This function returns the AxonDeepSeg paper citation.
+        :return: The AxonDeepSeg citation
+        :rtype: string
+        """
+        return (
+            "If you use this work in your research, please cite it as follows: \n"
+            "Zaimi, A., Wabartha, M., Herman, V., Antonsanti, P.-L., Perone, C. S., & Cohen-Adad, J. (2018). "
+            "AxonDeepSeg: automatic axon and myelin segmentation from microscopy data using convolutional "
+            "neural networks. Scientific Reports, 8(1), 3816. "
+            "Link to paper: https://doi.org/10.1038/s41598-018-22181-4. \n"
+            "Copyright (c) 2018 NeuroPoly (Polytechnique Montreal)"
+        )
