@@ -1,13 +1,15 @@
 from typing import TYPE_CHECKING
 
+import os
 from pathlib import Path
 import numpy as np
-from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit
+from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog
 from qtpy.QtCore import QStringListModel
 from qtpy.QtGui import QPixmap
 
 import AxonDeepSeg
 from AxonDeepSeg import ads_utils, segment, postprocessing
+import AxonDeepSeg.morphometrics.compute_morphometrics as compute_morphs
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
 if TYPE_CHECKING:
@@ -40,6 +42,7 @@ class ADSplugin(QWidget):
         fill_axons_button.clicked.connect(self._on_fill_axons_click)
 
         compute_morphometrics_button = QPushButton("Compute morphometrics")
+        compute_morphometrics_button.clicked.connect(self._on_compute_morphometrics_button)
 
         self.setLayout(QVBoxLayout())
         self.layout().setSpacing(10)
@@ -53,8 +56,7 @@ class ADSplugin(QWidget):
         self.layout().addWidget(compute_morphometrics_button)
         self.layout().addStretch()
 
-
-    def add_layer_pixel_size_to_metadata(self, layer):
+    def try_to_get_pixel_size_of_layer(self, layer):
         image_path = Path(layer.source.path)
         image_directory = image_path.parents[0]
 
@@ -64,10 +66,17 @@ class ADSplugin(QWidget):
         if pixel_size_exists:
             resolution_file = open((image_directory / "pixel_size_in_micrometer.txt").__str__(), 'r')
             pixel_size_float = float(resolution_file.read())
-            layer.metadata["pixel_size"] = pixel_size_float
-            return True
+            return pixel_size_float
         else:
             print("Couldn't find pixel size information")
+            return None
+
+    def add_layer_pixel_size_to_metadata(self, layer):
+        pixel_size = self.try_to_get_pixel_size_of_layer(layer)
+        if pixel_size is not None:
+            layer.metadata["pixel_size"] = pixel_size
+            return True
+        else:
             return False
 
 
@@ -133,6 +142,41 @@ class ADSplugin(QWidget):
         axon_layer.data[axon_array_indexes] = 1
         axon_layer.refresh()
 
+    def _on_compute_morphometrics_button(self):
+        axon_layer = self.get_axon_layer()
+        myelin_layer = self.get_myelin_layer()
+
+        if (axon_layer is None) or (myelin_layer is None):
+            return  #TODO: display message
+        axon_data = axon_layer.data
+        myelin_data = myelin_layer.data
+
+        # Try to find the pixel size (TODO: fix this, I don't add source to labels)
+        # pixel_size = self.try_to_get_pixel_size_of_layer(myelin_layer)
+        pixel_size = self.get_pixel_size_with_prompt()
+        if pixel_size is None:
+            return # Display error message
+
+        # Ask the user where to save
+        default_name = Path(os.getcwd()) / "Morphometrics.csv"
+        fileName, selected_filter = QFileDialog.getSaveFileName(self, caption="Select where to save morphometrics", directory=str(default_name), filter= "CSV file(*.csv)")
+        if fileName == "":
+            return
+
+        # Compute statistics
+        stats_dataframe, index_image_array = compute_morphs.get_axon_morphometrics(im_axon=axon_data,
+                                                                                   im_myelin=myelin_data,
+                                                                                   pixel_size=pixel_size,
+                                                                                   return_index_image=True)
+        try:
+            compute_morphs.save_axon_morphometrics(fileName, stats_dataframe)
+
+        except IOError:
+            print("Cannot save morphometrics") # TODO: show popup
+
+        self.viewer.add_image(data = index_image_array, rgb=False, colormap="yellow", blending="additive")
+
+
     def get_axon_layer(self):
         #TODO: find a better way to find the layer
         for layer in self.viewer.layers:
@@ -146,6 +190,14 @@ class ADSplugin(QWidget):
             if layer.name == "myelin_data":
                 return layer
         return None
+
+    def get_pixel_size_with_prompt(self):
+        pixel_size, ok_pressed = QInputDialog.getDouble(self, "Enter the pixel size",
+                                                        "Enter the pixel size in micrometers", 0.07, 0, 1000, 10)
+        if ok_pressed:
+            return pixel_size
+        else:
+            return None
 
     def get_logo(self):
         ads_path = Path(AxonDeepSeg.__file__).parents[0]
