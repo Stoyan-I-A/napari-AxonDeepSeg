@@ -12,8 +12,7 @@ from AxonDeepSeg import ads_utils, segment, postprocessing
 import AxonDeepSeg.morphometrics.compute_morphometrics as compute_morphs
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
-if TYPE_CHECKING:
-    import napari
+import napari
 
 
 class ADSplugin(QWidget):
@@ -118,12 +117,18 @@ class ADSplugin(QWidget):
 
         image_name_no_extension = selected_layer.name
         axon_mask_path = image_directory / (image_name_no_extension + str(axon_suffix))
+        axon_mask_name = image_name_no_extension + axon_suffix.stem
         myelin_mask_path = image_directory / (image_name_no_extension + str(myelin_suffix))
+        myelin_mask_name = image_name_no_extension + myelin_suffix.stem
 
         axon_data = ads_utils.imread(axon_mask_path).astype(bool)
-        self.viewer.add_labels(axon_data, color={1: 'blue'})
+        self.viewer.add_labels(axon_data, color={1: 'blue'}, name=axon_mask_name,
+                               metadata={"associated_image_name" : image_name_no_extension})
         myelin_data = ads_utils.imread(myelin_mask_path).astype(bool)
-        self.viewer.add_labels(myelin_data, color={1: 'red'})
+        self.viewer.add_labels(myelin_data, color={1: 'red'}, name=myelin_mask_name,
+                               metadata={"associated_image_name" : image_name_no_extension})
+        selected_layer.metadata["associated_axon_mask_name"] = axon_mask_name
+        selected_layer.metadata["associated_myelin_mask_name"] = myelin_mask_name
 
 
     def _on_fill_axons_click(self):
@@ -174,22 +179,39 @@ class ADSplugin(QWidget):
         except IOError:
             print("Cannot save morphometrics") # TODO: show popup
 
-        self.viewer.add_image(data = index_image_array, rgb=False, colormap="yellow", blending="additive")
+        self.viewer.add_image(data = index_image_array, rgb=False, colormap="yellow", blending="additive",
+                              name="numbers")
 
+    def get_layer_by_name(self, name_of_layer):
+        for layer in self.viewer.layers:
+            if layer.name == name_of_layer:
+                return layer
+
+    def get_mask_layer(self, type_of_mask):
+        selected_layers = self.viewer.layers.selection
+        selected_layer = selected_layers.active
+
+        napari_image_class = napari.layers.image.image.Image
+        napari_labels_class = napari.layers.labels.labels.Labels
+        # If the user has a mask selected, refer to its image layer
+        if selected_layer.__class__ == napari_labels_class:
+            image_label = self.get_layer_by_name(selected_layer.metadata["associated_image_name"])
+        elif selected_layer.__class__ == napari_image_class:
+            image_label = selected_layer
+        else:
+            return None
+
+        if type_of_mask == "axon":
+            return self.get_layer_by_name(image_label.metadata["associated_axon_mask_name"])
+        elif type_of_mask == "myelin":
+            return self.get_layer_by_name(image_label.metadata["associated_myelin_mask_name"])
+        return None
 
     def get_axon_layer(self):
-        #TODO: find a better way to find the layer
-        for layer in self.viewer.layers:
-            if layer.name == "axon_data":
-                return layer
-        return None
+        return self.get_mask_layer("axon")
 
     def get_myelin_layer(self):
-        #TODO: find a better way to find the layer
-        for layer in self.viewer.layers:
-            if layer.name == "myelin_data":
-                return layer
-        return None
+        return self.get_mask_layer("myelin")
 
     def get_pixel_size_with_prompt(self):
         pixel_size, ok_pressed = QInputDialog.getDouble(self, "Enter the pixel size",
