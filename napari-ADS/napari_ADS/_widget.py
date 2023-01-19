@@ -2,13 +2,15 @@ from typing import TYPE_CHECKING
 
 import os
 from pathlib import Path
+
+import config
 import numpy as np
 from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog
 from qtpy.QtCore import QStringListModel
 from qtpy.QtGui import QPixmap
 
 import AxonDeepSeg
-from AxonDeepSeg import ads_utils, segment, postprocessing
+from AxonDeepSeg import ads_utils, segment, postprocessing, params
 import AxonDeepSeg.morphometrics.compute_morphometrics as compute_morphs
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
@@ -37,8 +39,14 @@ class ADSplugin(QWidget):
         apply_model_button = QPushButton("Apply ADS model")
         apply_model_button.clicked.connect(self._on_apply_model_button_click)
 
+        load_mask_button = QPushButton("Load mask")
+        load_mask_button.clicked.connect(self._on_load_mask_button_click)
+
         fill_axons_button = QPushButton("Fill axons")
         fill_axons_button.clicked.connect(self._on_fill_axons_click)
+
+        save_segmentation_button = QPushButton("Save segmentation")
+        save_segmentation_button.clicked.connect(self._on_save_segmentation_button)
 
         compute_morphometrics_button = QPushButton("Compute morphometrics")
         compute_morphometrics_button.clicked.connect(self._on_compute_morphometrics_button)
@@ -51,7 +59,9 @@ class ADSplugin(QWidget):
         self.layout().addWidget(hyperlink_label)
         self.layout().addWidget(self.model_selection_combobox)
         self.layout().addWidget(apply_model_button)
+        self.layout().addWidget(load_mask_button)
         self.layout().addWidget(fill_axons_button)
+        self.layout().addWidget(save_segmentation_button)
         self.layout().addWidget(compute_morphometrics_button)
         self.layout().addStretch()
 
@@ -130,6 +140,33 @@ class ADSplugin(QWidget):
         selected_layer.metadata["associated_axon_mask_name"] = axon_mask_name
         selected_layer.metadata["associated_myelin_mask_name"] = myelin_mask_name
 
+    def _on_load_mask_button_click(self):
+        microscopy_image_layer = self.get_microscopy_image()
+        if microscopy_image_layer is None:
+            # TODO: show a message saying that you need a loaded microscopy image
+            return
+
+        mask_file_path, _ = QFileDialog.getOpenFileName(self, "Select the mask you wish to load")
+        if mask_file_path == "":
+            return
+
+        img_png2D = ads_utils.imread(mask_file_path)
+        # Extract the Axon mask
+        axon_data = img_png2D > 200
+        axon_data = axon_data.astype(np.uint8)
+        axon_mask_name = microscopy_image_layer.name + config.axon_suffix.stem
+        # Extract the Myelin mask
+        myelin_data = (img_png2D > 100) & (img_png2D < 200)
+        myelin_data = myelin_data.astype(np.uint8)
+        myelin_mask_name = microscopy_image_layer.name + config.myelin_suffix.stem
+
+        # Load the masks and add metadata to the files to keep a link between them
+        self.viewer.add_labels(axon_data, color={1: 'blue'}, name=axon_mask_name,
+                               metadata={"associated_image_name": microscopy_image_layer.name})
+        self.viewer.add_labels(myelin_data, color={1: 'red'}, name=myelin_mask_name,
+                               metadata={"associated_image_name": microscopy_image_layer.name})
+        microscopy_image_layer.metadata["associated_axon_mask_name"] = axon_mask_name
+        microscopy_image_layer.metadata["associated_myelin_mask_name"] = myelin_mask_name
 
     def _on_fill_axons_click(self):
         axon_layer = self.get_axon_layer()
@@ -146,6 +183,30 @@ class ADSplugin(QWidget):
                                   1))
         axon_layer.data[axon_array_indexes] = 1
         axon_layer.refresh()
+
+    def _on_save_segmentation_button(self):
+        axon_layer = self.get_axon_layer()
+        myelin_layer = self.get_myelin_layer()
+
+        if (axon_layer is None) or (myelin_layer is None):
+            return
+        save_path = QFileDialog.getExistingDirectory(self, "Select where the segmentation should be saved")
+        save_path = Path(save_path)
+
+        # Scale the pixel values of the masks to 255 for image saving
+        myelin_array = myelin_layer.data * params.intensity['binary']
+        axon_array = axon_layer.data * params.intensity['binary']
+
+        myelin_and_axon_array = (myelin_array // 2 + axon_array).astype(np.uint8)
+
+        microscopy_image_name = axon_layer.metadata["associated_image_name"]
+        axon_image_name = microscopy_image_name + str(config.axon_suffix)
+        myelin_image_name = microscopy_image_name + str(config.myelin_suffix)
+        axonmyelin_image_name = microscopy_image_name + str(config.axonmyelin_suffix)
+
+        ads_utils.imwrite(filename=save_path / axonmyelin_image_name, img=myelin_and_axon_array)
+        ads_utils.imwrite(filename=save_path / myelin_image_name, img=myelin_array)
+        ads_utils.imwrite(filename=save_path / axon_image_name, img=axon_array)
 
     def _on_compute_morphometrics_button(self):
         axon_layer = self.get_axon_layer()
@@ -164,8 +225,9 @@ class ADSplugin(QWidget):
 
         # Ask the user where to save
         default_name = Path(os.getcwd()) / "Morphometrics.csv"
-        fileName, selected_filter = QFileDialog.getSaveFileName(self, caption="Select where to save morphometrics", directory=str(default_name), filter= "CSV file(*.csv)")
-        if fileName == "":
+        file_name, selected_filter = QFileDialog.getSaveFileName(self, caption="Select where to save morphometrics", 
+                                                                 directory=str(default_name), filter= "CSV file(*.csv)")
+        if file_name == "":
             return
 
         # Compute statistics
@@ -174,7 +236,7 @@ class ADSplugin(QWidget):
                                                                                    pixel_size=pixel_size,
                                                                                    return_index_image=True)
         try:
-            compute_morphs.save_axon_morphometrics(fileName, stats_dataframe)
+            compute_morphs.save_axon_morphometrics(file_name, stats_dataframe)
 
         except IOError:
             print("Cannot save morphometrics") # TODO: show popup
@@ -186,6 +248,17 @@ class ADSplugin(QWidget):
         for layer in self.viewer.layers:
             if layer.name == name_of_layer:
                 return layer
+
+    def get_microscopy_image(self):
+        selected_layers = self.viewer.layers.selection
+        selected_layer = selected_layers.active
+
+        if selected_layer.__class__ == napari.layers.image.image.Image:
+            return selected_layer
+        elif selected_layer.__class__ == napari.layers.labels.labels.Labels:
+            return self.get_layer_by_name(selected_layer.metadata["associated_image_name"])
+        else:
+            return None
 
     def get_mask_layer(self, type_of_mask):
         selected_layers = self.viewer.layers.selection
