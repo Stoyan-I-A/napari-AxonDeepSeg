@@ -5,12 +5,12 @@ A (work in progress) plugin for napari that implements the AxonDeepSeg tools
 ## Instructions to install the plugin
 
 1. Clone the [AxonDeepSeg repo](https://github.com/axondeepseg/axondeepseg).
-2. In the AxonDeepSeg repo, open the environment.yml file and change the fsleyes requirement to napari. Save the file.
+2. In the AxonDeepSeg repo, open the environment.yml file and change the fsleyes requirement to napari. While you're here, you could change the name of the environment to ads_napari_env. Save the file.
 3. Follow the [instructions](https://axondeepseg.readthedocs.io/en/latest/) of the AxonDeepSeg installation documentation.
 4. Clone this repo:
 
 ```
-git clone https://github.com/neuropoly/axondeepseg.git
+git clone https://github.com/axondeepseg/napari-plugin.git
 ```
 5. Get to the napari-ADS folder:
 ```
