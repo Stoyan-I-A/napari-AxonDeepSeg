@@ -39,7 +39,7 @@ class ADSsettings:
         # self.n_gpus = ads_utils.check_available_gpus(None)
         # self.max_gpu_id = self.n_gpus-1 if self.n_gpus > 0 else 0
 
-        self.Settings_menu_ui = QtWidgets.QWidget()
+        self.Settings_menu_ui = QtWidgets.QDialog(ads_plugin)
         self.ui = Ui_Settings_menu_ui()
         self.ui.setupUi(self.Settings_menu_ui)
         self.ui.done_button.clicked.connect(self._on_done_button_click)
