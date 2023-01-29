@@ -6,7 +6,7 @@ from pathlib import Path
 import config
 import numpy as np
 from qtpy import QtWidgets
-from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog
+from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog, QMessageBox
 from qtpy.QtCore import QStringListModel
 from qtpy.QtGui import QPixmap
 
@@ -30,25 +30,55 @@ class ADSsettings:
         self.ads_plugin = ads_plugin
 
         # Declare the settings used
-        self.overlap_value = 48
+        self.overlap_value = segment.default_overlap
         self.zoom_factor = 1.0
         self.axon_shape = "circle"
+        self._axon_shape_selection_index = 0
         self.no_patch = False
         self.gpu_id = 0
         # TODO: update this after updating ADS
         # self.n_gpus = ads_utils.check_available_gpus(None)
         # self.max_gpu_id = self.n_gpus-1 if self.n_gpus > 0 else 0
+        self.setup_settings_menu()
 
-        self.Settings_menu_ui = QtWidgets.QDialog(ads_plugin)
+    def setup_settings_menu(self):
+        self.Settings_menu_ui = QtWidgets.QDialog(self.ads_plugin)
         self.ui = Ui_Settings_menu_ui()
         self.ui.setupUi(self.Settings_menu_ui)
         self.ui.done_button.clicked.connect(self._on_done_button_click)
 
+        self.ui.overlap_value_spinBox.valueChanged.connect(self._on_overlap_value_changed)
+        self.ui.zoom_factor_spinBox.valueChanged.connect(self._on_zoom_factor_changed)
+        self.ui.axon_shape_comboBox.currentIndexChanged.connect(self._on_axon_shape_changed)
+        self.ui.no_patch_checkBox.stateChanged.connect(self._on_no_patch_changed)
+        self.ui.gpu_id_spinBox.valueChanged.connect(self._on_gpu_id_changed)
+
     def create_settings_menu(self):
+        self.ui.overlap_value_spinBox.setValue(self.overlap_value)
+        self.ui.zoom_factor_spinBox.setValue(self.zoom_factor)
+        self.ui.axon_shape_comboBox.setCurrentIndex(self._axon_shape_selection_index)
+        self.ui.no_patch_checkBox.setChecked(self.no_patch)
+        self.ui.gpu_id_spinBox.setValue(self.gpu_id)
         self.Settings_menu_ui.show()
 
     def _on_done_button_click(self):
         self.Settings_menu_ui.close()
+
+    def _on_overlap_value_changed(self):
+        self.overlap_value = self.ui.overlap_value_spinBox.value()
+
+    def _on_zoom_factor_changed(self):
+        self.zoom_factor = self.ui.zoom_factor_spinBox.value()
+
+    def _on_axon_shape_changed(self):
+        self.axon_shape = self.ui.axon_shape_comboBox.currentText()
+        self._axon_shape_selection_index = self.ui.axon_shape_comboBox.currentIndex()
+
+    def _on_no_patch_changed(self):
+        self.no_patch = self.ui.no_patch_checkBox.isChecked()
+
+    def _on_gpu_id_changed(self):
+        self.gpu_id = self.ui.gpu_id_spinBox.value()
 
 
 class ADSplugin(QWidget):
@@ -112,11 +142,11 @@ class ADSplugin(QWidget):
         pixel_size_exists = (image_directory / "pixel_size_in_micrometer.txt").exists()
 
         if pixel_size_exists:
-            resolution_file = open((image_directory / "pixel_size_in_micrometer.txt").__str__(), 'r')
+            resolution_file = open(str((image_directory / "pixel_size_in_micrometer.txt")), 'r')
             pixel_size_float = float(resolution_file.read())
             return pixel_size_float
         else:
-            print("Couldn't find pixel size information")
+            self.show_info_message("Couldn't find pixel size information")
             return None
 
     def add_layer_pixel_size_to_metadata(self, layer):
@@ -133,11 +163,13 @@ class ADSplugin(QWidget):
         selected_model = self.model_selection_combobox.currentText()
 
         if selected_model not in self.available_models:
+            self.show_info_message("No model selected")
             return
         else:
             ads_path = Path(AxonDeepSeg.__file__).parents[0]
             model_path = ads_path / "models" / selected_model
         if len(selected_layers) != 1:
+            self.show_info_message("No single image selected")
             return
         selected_layer = selected_layers.active
         image_directory = Path(selected_layer.source.path).parents[0]
@@ -145,21 +177,22 @@ class ADSplugin(QWidget):
         # Check if the pixel size txt file exist in the imageDirPath
         if "pixel_size" not in selected_layer.metadata.keys():
             if not self.add_layer_pixel_size_to_metadata(selected_layer):
-                return # Couldn't find pixel size
+                self.show_info_message("Couldn't find pixel size")
+                return
 
         try:
             segment.segment_image(
                 path_testing_image=Path(selected_layer.source.path),
                 path_model=model_path,
-                overlap_value=[segment.default_overlap, segment.default_overlap],
+                overlap_value=[self.settings.overlap_value, self.settings.overlap_value],
                 acquired_resolution=selected_layer.metadata["pixel_size"],
-                zoom_factor=1.0,
+                zoom_factor=self.settings.zoom_factor,
                 verbosity_level=3
             )
         except SystemExit as err:
             if err.code == 4:
-                print(
-                    "Resampled image smaller than model's patch size. Please take a look at your terminal "
+                self.show_info_message(
+                    "Resampled image smaller than model's patch size. Please take a look at your terminal \n"
                     "for the minimum zoom factor value to use (option available in the Settings menu)."
                 )
             return
@@ -182,11 +215,14 @@ class ADSplugin(QWidget):
     def _on_load_mask_button_click(self):
         microscopy_image_layer = self.get_microscopy_image()
         if microscopy_image_layer is None:
-            # TODO: show a message saying that you need a loaded microscopy image
+            self.show_info_message("No single image selected/detected")
             return
 
         mask_file_path, _ = QFileDialog.getOpenFileName(self, "Select the mask you wish to load")
         if mask_file_path == "":
+            return
+
+        if not self.show_ok_cancel_message("The mask will be associated with " + microscopy_image_layer.name):
             return
 
         img_png2D = ads_utils.imread(mask_file_path)
@@ -212,6 +248,7 @@ class ADSplugin(QWidget):
         myelin_layer = self.get_myelin_layer()
 
         if (axon_layer is None) or (myelin_layer is None):
+            self.show_info_message("One or more masks missing")
             return
 
         myelin_array = np.array(myelin_layer.data, copy=True)
@@ -228,6 +265,7 @@ class ADSplugin(QWidget):
         myelin_layer = self.get_myelin_layer()
 
         if (axon_layer is None) or (myelin_layer is None):
+            self.show_info_message("One or more masks missing")
             return
         save_path = QFileDialog.getExistingDirectory(self, "Select where the segmentation should be saved")
         save_path = Path(save_path)
@@ -250,17 +288,23 @@ class ADSplugin(QWidget):
     def _on_compute_morphometrics_button(self):
         axon_layer = self.get_axon_layer()
         myelin_layer = self.get_myelin_layer()
+        microscopy_image_layer = self.get_microscopy_image()
 
-        if (axon_layer is None) or (myelin_layer is None):
-            return  #TODO: display message
+        if (axon_layer is None) or (myelin_layer is None) or (microscopy_image_layer is None):
+            self.show_info_message("Image or mask(s) missing.")
+            return
         axon_data = axon_layer.data
         myelin_data = myelin_layer.data
 
-        # Try to find the pixel size (TODO: fix this, I don't add source to labels)
-        # pixel_size = self.try_to_get_pixel_size_of_layer(myelin_layer)
-        pixel_size = self.get_pixel_size_with_prompt()
+
+        # Try to find the pixel size
+        if "pixel_size" not in microscopy_image_layer.metadata.keys():
+            pixel_size = self.get_pixel_size_with_prompt()
+        else:
+            pixel_size = microscopy_image_layer.metadata["pixel_size"]
+
         if pixel_size is None:
-            return # Display error message
+            return
 
         # Ask the user where to save
         default_name = Path(os.getcwd()) / "Morphometrics.csv"
@@ -273,12 +317,13 @@ class ADSplugin(QWidget):
         stats_dataframe, index_image_array = compute_morphs.get_axon_morphometrics(im_axon=axon_data,
                                                                                    im_myelin=myelin_data,
                                                                                    pixel_size=pixel_size,
+                                                                                   axon_shape=self.settings.axon_shape,
                                                                                    return_index_image=True)
         try:
             compute_morphs.save_axon_morphometrics(file_name, stats_dataframe)
 
         except IOError:
-            print("Cannot save morphometrics") # TODO: show popup
+            self.show_info_message("Cannot save morphometrics")
 
         self.viewer.add_image(data = index_image_array, rgb=False, colormap="yellow", blending="additive",
                               name="numbers")
@@ -293,7 +338,11 @@ class ADSplugin(QWidget):
 
     def get_microscopy_image(self):
         selected_layers = self.viewer.layers.selection
+        if len(selected_layers) == 0:
+            return None
         selected_layer = selected_layers.active
+        if selected_layer is None:
+            return None
 
         if selected_layer.__class__ == napari.layers.image.image.Image:
             return selected_layer
@@ -304,7 +353,11 @@ class ADSplugin(QWidget):
 
     def get_mask_layer(self, type_of_mask):
         selected_layers = self.viewer.layers.selection
+        if len(selected_layers) == 0:
+            return None
         selected_layer = selected_layers.active
+        if selected_layer is None:
+            return None
 
         napari_image_class = napari.layers.image.image.Image
         napari_labels_class = napari.layers.labels.labels.Labels
@@ -335,6 +388,24 @@ class ADSplugin(QWidget):
             return pixel_size
         else:
             return None
+
+    def show_info_message(self, message):
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Information)
+        message_box.setText(message)
+        message_box.setStandardButtons(QMessageBox.Ok)
+        message_box.exec()
+
+    def show_ok_cancel_message(self, message):
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Information)
+        message_box.setText(message)
+        message_box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+
+        if message_box.exec() == QMessageBox.Ok:
+            return True
+        else:
+            return False
 
     def get_logo(self):
         ads_path = Path(AxonDeepSeg.__file__).parents[0]
