@@ -1,10 +1,11 @@
 from typing import TYPE_CHECKING
 
-import os
+import os, sys
 from pathlib import Path
 
 import config
 import numpy as np
+from qtpy import QtWidgets
 from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog
 from qtpy.QtCore import QStringListModel
 from qtpy.QtGui import QPixmap
@@ -15,12 +16,46 @@ import AxonDeepSeg.morphometrics.compute_morphometrics as compute_morphs
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
 import napari
+from .settings_menu_ui import Ui_Settings_menu_ui
+
+class ADSsettings:
+    """
+    This class handles everything related to the parameters used in the ADS plugin, including the frame for the settings
+    menu.
+    """
+    def __init__(self, ads_plugin):
+        """
+        Constructor for the ADSsettings class. Initializes the default settings.
+        """
+        self.ads_plugin = ads_plugin
+
+        # Declare the settings used
+        self.overlap_value = 48
+        self.zoom_factor = 1.0
+        self.axon_shape = "circle"
+        self.no_patch = False
+        self.gpu_id = 0
+        # TODO: update this after updating ADS
+        # self.n_gpus = ads_utils.check_available_gpus(None)
+        # self.max_gpu_id = self.n_gpus-1 if self.n_gpus > 0 else 0
+
+        self.Settings_menu_ui = QtWidgets.QWidget()
+        self.ui = Ui_Settings_menu_ui()
+        self.ui.setupUi(self.Settings_menu_ui)
+        self.ui.done_button.clicked.connect(self._on_done_button_click)
+
+    def create_settings_menu(self):
+        self.Settings_menu_ui.show()
+
+    def _on_done_button_click(self):
+        self.Settings_menu_ui.close()
 
 
 class ADSplugin(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
+        self.settings = ADSsettings(self)
 
         citation_textbox = QPlainTextEdit(self)
         citation_textbox.setPlainText(self.get_citation_string())
@@ -51,6 +86,9 @@ class ADSplugin(QWidget):
         compute_morphometrics_button = QPushButton("Compute morphometrics")
         compute_morphometrics_button.clicked.connect(self._on_compute_morphometrics_button)
 
+        settings_menu_button = QPushButton("Settings")
+        settings_menu_button.clicked.connect(self._on_settings_menu_clicked)
+
         self.setLayout(QVBoxLayout())
         self.layout().setSpacing(10)
         self.layout().setContentsMargins(10, 20, 20, 10)
@@ -63,6 +101,7 @@ class ADSplugin(QWidget):
         self.layout().addWidget(fill_axons_button)
         self.layout().addWidget(save_segmentation_button)
         self.layout().addWidget(compute_morphometrics_button)
+        self.layout().addWidget(settings_menu_button)
         self.layout().addStretch()
 
     def try_to_get_pixel_size_of_layer(self, layer):
@@ -225,7 +264,7 @@ class ADSplugin(QWidget):
 
         # Ask the user where to save
         default_name = Path(os.getcwd()) / "Morphometrics.csv"
-        file_name, selected_filter = QFileDialog.getSaveFileName(self, caption="Select where to save morphometrics", 
+        file_name, selected_filter = QFileDialog.getSaveFileName(self, caption="Select where to save morphometrics",
                                                                  directory=str(default_name), filter= "CSV file(*.csv)")
         if file_name == "":
             return
@@ -243,6 +282,9 @@ class ADSplugin(QWidget):
 
         self.viewer.add_image(data = index_image_array, rgb=False, colormap="yellow", blending="additive",
                               name="numbers")
+
+    def _on_settings_menu_clicked(self):
+        self.settings.create_settings_menu()
 
     def get_layer_by_name(self, name_of_layer):
         for layer in self.viewer.layers:
