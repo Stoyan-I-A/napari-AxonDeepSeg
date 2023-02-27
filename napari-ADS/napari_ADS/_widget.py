@@ -3,19 +3,22 @@ from typing import TYPE_CHECKING
 import os, sys
 from pathlib import Path
 
+import AxonDeepSeg
 import config
 import numpy as np
-from qtpy import QtWidgets
-from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, QInputDialog, QMessageBox
-from qtpy.QtCore import QStringListModel
+import qtpy.QtCore
+from qtpy import QtWidgets, QtCore
+from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QFileDialog, QLabel, QPlainTextEdit, \
+    QInputDialog, QMessageBox
+from qtpy.QtCore import QStringListModel, QObject, Signal
 from qtpy.QtGui import QPixmap
 
-import AxonDeepSeg
 from AxonDeepSeg import ads_utils, segment, postprocessing, params
 import AxonDeepSeg.morphometrics.compute_morphometrics as compute_morphs
 from config import axonmyelin_suffix, axon_suffix, myelin_suffix
 
 import napari
+from napari.utils.notifications import show_info
 from .settings_menu_ui import Ui_Settings_menu_ui
 
 class ADSsettings:
@@ -30,15 +33,14 @@ class ADSsettings:
         self.ads_plugin = ads_plugin
 
         # Declare the settings used
-        self.overlap_value = segment.default_overlap
+        self.overlap_value = 48
         self.zoom_factor = 1.0
         self.axon_shape = "circle"
         self._axon_shape_selection_index = 0
         self.no_patch = False
         self.gpu_id = 0
-        # TODO: update this after updating ADS
-        # self.n_gpus = ads_utils.check_available_gpus(None)
-        # self.max_gpu_id = self.n_gpus-1 if self.n_gpus > 0 else 0
+        self.n_gpus = ads_utils.check_available_gpus(None)
+        self.max_gpu_id = self.n_gpus-1 if self.n_gpus > 0 else 0
         self.setup_settings_menu()
 
     def setup_settings_menu(self):
@@ -59,6 +61,7 @@ class ADSsettings:
         self.ui.axon_shape_comboBox.setCurrentIndex(self._axon_shape_selection_index)
         self.ui.no_patch_checkBox.setChecked(self.no_patch)
         self.ui.gpu_id_spinBox.setValue(self.gpu_id)
+        self.ui.gpu_id_spinBox.setMaximum(self.max_gpu_id)
         self.Settings_menu_ui.show()
 
     def _on_done_button_click(self):
@@ -101,8 +104,10 @@ class ADSplugin(QWidget):
         self.model_selection_combobox = QComboBox()
         self.model_selection_combobox.addItems(["Select the model"] + self.available_models)
 
-        apply_model_button = QPushButton("Apply ADS model")
-        apply_model_button.clicked.connect(self._on_apply_model_button_click)
+        self.apply_model_button = QPushButton("Apply ADS model")
+        self.apply_model_button.clicked.connect(self._on_apply_model_button_click)
+        self.apply_model_thread = ApplyModelThread()
+        self.apply_model_thread.model_applied_signal.connect(self._on_model_finished_apply)
 
         load_mask_button = QPushButton("Load mask")
         load_mask_button.clicked.connect(self._on_load_mask_button_click)
@@ -126,7 +131,7 @@ class ADSplugin(QWidget):
         self.layout().addWidget(citation_textbox)
         self.layout().addWidget(hyperlink_label)
         self.layout().addWidget(self.model_selection_combobox)
-        self.layout().addWidget(apply_model_button)
+        self.layout().addWidget(self.apply_model_button)
         self.layout().addWidget(load_mask_button)
         self.layout().addWidget(fill_axons_button)
         self.layout().addWidget(save_segmentation_button)
@@ -146,7 +151,6 @@ class ADSplugin(QWidget):
             pixel_size_float = float(resolution_file.read())
             return pixel_size_float
         else:
-            self.show_info_message("Couldn't find pixel size information")
             return None
 
     def add_layer_pixel_size_to_metadata(self, layer):
@@ -177,26 +181,27 @@ class ADSplugin(QWidget):
         # Check if the pixel size txt file exist in the imageDirPath
         if "pixel_size" not in selected_layer.metadata.keys():
             if not self.add_layer_pixel_size_to_metadata(selected_layer):
-                self.show_info_message("Couldn't find pixel size")
-                return
+                pixel_size = self.get_pixel_size_with_prompt()
+                if pixel_size is None:
+                    return
+                selected_layer.metadata["pixel_size"] = pixel_size
 
-        try:
-            segment.segment_image(
-                path_testing_image=Path(selected_layer.source.path),
-                path_model=model_path,
-                overlap_value=[self.settings.overlap_value, self.settings.overlap_value],
-                acquired_resolution=selected_layer.metadata["pixel_size"],
-                zoom_factor=self.settings.zoom_factor,
-                verbosity_level=3
-            )
-        except SystemExit as err:
-            if err.code == 4:
-                self.show_info_message(
-                    "Resampled image smaller than model's patch size. Please take a look at your terminal \n"
-                    "for the minimum zoom factor value to use (option available in the Settings menu)."
-                )
-            return
+        self.apply_model_button.setEnabled(False)
+        self.apply_model_thread.selected_layer = selected_layer
+        self.apply_model_thread.image_directory = image_directory
+        self.apply_model_thread.path_testing_image = Path(selected_layer.source.path)
+        self.apply_model_thread.path_model = model_path
+        self.apply_model_thread.overlap_value = [self.settings.overlap_value, self.settings.overlap_value]
+        self.apply_model_thread.zoom_factor = self.settings.zoom_factor
+        self.apply_model_thread.no_patch = self.settings.no_patch
+        self.apply_model_thread.gpu_id = self.settings.gpu_id
+        show_info("Applying ADS model... This can take a few seconds. Check the console for more information.")
+        self.apply_model_thread.start()
 
+
+    def _on_model_finished_apply(self):
+        selected_layer = self.apply_model_thread.selected_layer
+        image_directory = self.apply_model_thread.image_directory
         image_name_no_extension = selected_layer.name
         axon_mask_path = image_directory / (image_name_no_extension + str(axon_suffix))
         axon_mask_name = image_name_no_extension + axon_suffix.stem
@@ -205,12 +210,13 @@ class ADSplugin(QWidget):
 
         axon_data = ads_utils.imread(axon_mask_path).astype(bool)
         self.viewer.add_labels(axon_data, color={1: 'blue'}, name=axon_mask_name,
-                               metadata={"associated_image_name" : image_name_no_extension})
+                               metadata={"associated_image_name": image_name_no_extension})
         myelin_data = ads_utils.imread(myelin_mask_path).astype(bool)
         self.viewer.add_labels(myelin_data, color={1: 'red'}, name=myelin_mask_name,
-                               metadata={"associated_image_name" : image_name_no_extension})
+                               metadata={"associated_image_name": image_name_no_extension})
         selected_layer.metadata["associated_axon_mask_name"] = axon_mask_name
         selected_layer.metadata["associated_myelin_mask_name"] = myelin_mask_name
+        self.apply_model_button.setEnabled(True)
 
     def _on_load_mask_button_click(self):
         microscopy_image_layer = self.get_microscopy_image()
@@ -430,3 +436,43 @@ class ADSplugin(QWidget):
             "Link to paper: https://doi.org/10.1038/s41598-018-22181-4. \n"
             "Copyright (c) 2018 NeuroPoly (Polytechnique Montreal)"
         )
+
+
+class ApplyModelThread(QtCore.QThread):
+    model_applied_signal = Signal()
+    def __init__(self):
+        super().__init__()
+        # Those values must not be None before calling run()
+        self.selected_layer = None
+        self.image_directory = None
+        self.path_testing_image = None
+        self.path_model = None
+        self.overlap_value = None
+        self.zoom_factor = None
+        self.no_patch = False
+        self.gpu_id = 0
+        self.task_finished_successfully = False
+
+    def run(self):
+        self.task_finished_successfully = False
+        try:
+            segment.segment_image(
+                path_testing_image=self.path_testing_image,
+                path_model=self.path_model,
+                overlap_value=self.overlap_value,
+                acquired_resolution=self.selected_layer.metadata["pixel_size"],
+                zoom_factor=self.zoom_factor,
+                gpu_id=self.gpu_id,
+                no_patch=self.no_patch,
+                verbosity_level=3
+            )
+            self.task_finished_successfully = True
+        except SystemExit as err:
+            if err.code == 4:
+                self.show_info_message(
+                    "Resampled image smaller than model's patch size. Please take a look at your terminal \n"
+                    "for the minimum zoom factor value to use (option available in the Settings menu)."
+                )
+            self.task_finished_successfully = False
+        self.model_applied_signal.emit()
+
