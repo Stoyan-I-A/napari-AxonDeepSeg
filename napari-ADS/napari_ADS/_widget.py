@@ -200,6 +200,11 @@ class ADSplugin(QWidget):
 
 
     def _on_model_finished_apply(self):
+        self.apply_model_button.setEnabled(True)
+        if not self.apply_model_thread.task_finished_successfully:
+            self.show_info_message("Couldn't apply the ADS model. Check the console for more information")
+            return
+
         selected_layer = self.apply_model_thread.selected_layer
         image_directory = self.apply_model_thread.image_directory
         image_name_no_extension = selected_layer.name
@@ -216,7 +221,6 @@ class ADSplugin(QWidget):
                                metadata={"associated_image_name": image_name_no_extension})
         selected_layer.metadata["associated_axon_mask_name"] = axon_mask_name
         selected_layer.metadata["associated_myelin_mask_name"] = myelin_mask_name
-        self.apply_model_button.setEnabled(True)
 
     def _on_load_mask_button_click(self):
         microscopy_image_layer = self.get_microscopy_image()
@@ -475,4 +479,3 @@ class ApplyModelThread(QtCore.QThread):
                 )
             self.task_finished_successfully = False
         self.model_applied_signal.emit()
-
